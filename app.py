@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 
+import pandas as pd
 import streamlit as st
 
 from analysis_engine import analyze_prior_auth
@@ -32,6 +33,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 RECORDS_FILE = DATA_DIR / "preauth_records.json"
+EVALUATION_FILE = DATA_DIR / "model_evaluation_records.json"
 
 
 # =============================================================================
@@ -72,13 +74,6 @@ st.markdown(
         margin-bottom: 1rem;
     }
 
-    .metric-card {
-        background: white;
-        border: 1px solid #e2ddd6;
-        padding: 1rem;
-        border-radius: 10px;
-    }
-
     .risk-low {
         color: #1a7f37;
         font-weight: 700;
@@ -107,30 +102,6 @@ st.markdown(
         color: #666;
         margin-top: 0.25rem;
     }
-
-    .success-box {
-        background: #e9f7ef;
-        border-left: 4px solid #1a7f37;
-        padding: 0.9rem;
-        margin-bottom: 1rem;
-        border-radius: 6px;
-    }
-
-    .warning-box {
-        background: #fff7e6;
-        border-left: 4px solid #b26a00;
-        padding: 0.9rem;
-        margin-bottom: 1rem;
-        border-radius: 6px;
-    }
-
-    .danger-box {
-        background: #fdecea;
-        border-left: 4px solid #c0392b;
-        padding: 0.9rem;
-        margin-bottom: 1rem;
-        border-radius: 6px;
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -138,7 +109,7 @@ st.markdown(
 
 
 # =============================================================================
-# Data functions
+# Data functions — prior authorization records
 # =============================================================================
 
 def load_records():
@@ -191,6 +162,140 @@ def add_submission(patient_data, result):
 
 
 # =============================================================================
+# Data functions — evaluation records
+# =============================================================================
+
+def load_evaluation_records():
+    if EVALUATION_FILE.exists():
+        with open(EVALUATION_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+def save_evaluation_records(records):
+    with open(EVALUATION_FILE, "w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2)
+
+
+def add_evaluation_record(record):
+    records = load_evaluation_records()
+    records.append(record)
+    save_evaluation_records(records)
+
+
+def clear_evaluation_records():
+    save_evaluation_records([])
+
+
+# =============================================================================
+# Evaluation helper functions
+# =============================================================================
+
+def normalize_risk_label(label):
+    label = str(label).lower().strip()
+
+    if label.startswith("low"):
+        return "low"
+    if label.startswith("medium"):
+        return "medium"
+    if label.startswith("high"):
+        return "high"
+
+    return "unknown"
+
+
+def build_confusion_matrix(records):
+    labels = ["low", "medium", "high"]
+
+    matrix = pd.DataFrame(
+        0,
+        index=labels,
+        columns=labels,
+    )
+
+    for record in records:
+        expected = normalize_risk_label(record.get("expected_risk", ""))
+        predicted = normalize_risk_label(record.get("predicted_risk", ""))
+
+        if expected in labels and predicted in labels:
+            matrix.loc[expected, predicted] += 1
+
+    return matrix
+
+
+def calculate_precision_recall(matrix):
+    labels = ["low", "medium", "high"]
+
+    rows = []
+    total_actual = matrix.values.sum()
+
+    weighted_precision_sum = 0
+    weighted_recall_sum = 0
+
+    for label in labels:
+        true_positive = matrix.loc[label, label]
+        predicted_total = matrix[label].sum()
+        actual_total = matrix.loc[label].sum()
+
+        precision = true_positive / predicted_total if predicted_total > 0 else 0
+        recall = true_positive / actual_total if actual_total > 0 else 0
+
+        rows.append(
+            {
+                "Risk Class": label.upper(),
+                "Actual Count": int(actual_total),
+                "Predicted Count": int(predicted_total),
+                "True Positives": int(true_positive),
+                "Precision": round(precision, 3),
+                "Recall": round(recall, 3),
+            }
+        )
+
+        if total_actual > 0:
+            class_weight = actual_total / total_actual
+            weighted_precision_sum += precision * class_weight
+            weighted_recall_sum += recall * class_weight
+
+    metrics_df = pd.DataFrame(rows)
+
+    return metrics_df, round(weighted_precision_sum, 3), round(weighted_recall_sum, 3)
+
+
+def calculate_business_metrics(
+    weekly_prior_auths,
+    current_minutes_per_pa,
+    current_denial_rate,
+    current_adverse_event_rate,
+    weighted_precision,
+    weighted_recall,
+    max_time_reduction_pct,
+    preventable_denial_pct,
+    preventable_adverse_event_pct,
+):
+    max_time_reduction = max_time_reduction_pct / 100
+    preventable_denial = preventable_denial_pct / 100
+    preventable_adverse = preventable_adverse_event_pct / 100
+
+    time_saved_per_pa = current_minutes_per_pa * max_time_reduction * weighted_precision
+    weekly_time_saved_hours = (weekly_prior_auths * time_saved_per_pa) / 60
+
+    denial_rate_reduction = current_denial_rate * preventable_denial * weighted_recall
+    projected_denial_rate = max(current_denial_rate - denial_rate_reduction, 0)
+
+    adverse_event_reduction = current_adverse_event_rate * preventable_adverse * weighted_recall
+    projected_adverse_event_rate = max(current_adverse_event_rate - adverse_event_reduction, 0)
+
+    return {
+        "time_saved_per_pa": round(time_saved_per_pa, 2),
+        "weekly_time_saved_hours": round(weekly_time_saved_hours, 2),
+        "denial_rate_reduction": round(denial_rate_reduction, 4),
+        "projected_denial_rate": round(projected_denial_rate, 4),
+        "adverse_event_reduction": round(adverse_event_reduction, 4),
+        "projected_adverse_event_rate": round(projected_adverse_event_rate, 4),
+    }
+
+
+# =============================================================================
 # UI helper functions
 # =============================================================================
 
@@ -220,17 +325,19 @@ def render_result(result):
 
     analysis_mode = result.get("analysis_mode", "")
 
+    if analysis_mode:
+        st.caption(f"Backend mode used: {analysis_mode}")
+
     if analysis_mode == "fallback_local_rules":
-        if result.get("gemini_error"):
+        if result.get("groq_error"):
             st.warning(
-                "Gemini Live Mode was unavailable, so the app used Local Mode fallback. "
-                "This may happen because of API quota, missing key, or connection issues."
+                "Groq AI Review Mode was unavailable, so the app used fallback logic. "
+                "Check GROQ_API_KEY, rate limits, or model availability."
             )
 
-        if result.get("claude_error"):
+        if result.get("gemini_error"):
             st.warning(
-                "Claude Live Mode was unavailable, so the app used Local Mode fallback. "
-                "This may happen because of API credits, missing key, or connection issues."
+                "Gemini Live Mode was also unavailable or not configured."
             )
 
     st.markdown(
@@ -347,6 +454,7 @@ page = st.sidebar.radio(
         "Dashboard",
         "New Submission",
         "Patient Lookup",
+        "Test Evaluation",
         "Model Performance",
         "How It Works",
     ],
@@ -355,15 +463,19 @@ page = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.caption("Analysis Options")
 
-st.sidebar.markdown("### Local Mode")
+st.sidebar.markdown("### Groq AI Review Mode")
 st.sidebar.write(
-    "Runs the analysis locally using document extraction, policy retrieval, "
-    "and rule-based critical-gap checks."
+    "Default AI review mode. Uses Llama 3.3 70B through Groq with uploaded packet text and retrieved payer-policy context."
 )
 
 st.sidebar.markdown("### Gemini Live Mode")
 st.sidebar.write(
-    "Uses Gemini with retrieved payer-policy context for deeper AI-based review."
+    "Backup AI review mode. Uses Gemini with uploaded packet text and retrieved payer-policy context."
+)
+
+st.sidebar.markdown("### Local Fallback Mode")
+st.sidebar.write(
+    "Backup mode only. Used when live AI APIs are unavailable."
 )
 
 
@@ -445,10 +557,6 @@ elif page == "New Submission":
         "Do not upload real patient information."
     )
 
-    # -------------------------------------------------------------------------
-    # Step 1: Upload PDF
-    # -------------------------------------------------------------------------
-
     st.markdown("### Step 1 — Upload PDF Packet")
 
     uploaded_file = st.file_uploader(
@@ -493,10 +601,6 @@ elif page == "New Submission":
 
     if st.session_state.get("uploaded_pdf_name"):
         st.info(f"Uploaded file: {st.session_state['uploaded_pdf_name']}")
-
-    # -------------------------------------------------------------------------
-    # Step 2: Review/edit details
-    # -------------------------------------------------------------------------
 
     st.markdown("### Step 2 — Review / Edit Details")
 
@@ -549,11 +653,12 @@ Provider recommends arthroscopic partial medial meniscectomy due to failed conse
 
         analysis_mode = st.selectbox(
             "Choose Analysis Mode",
-            ["Local Mode", "Gemini Live Mode"],
+            ["Groq AI Review Mode", "Gemini Live Mode", "Local Fallback Mode"],
             index=0,
             help=(
-                "Local Mode uses local rule-based analysis. "
-                "Gemini Live Mode uses Gemini with retrieved policy context."
+                "Groq AI Review Mode is the default AI reviewer. "
+                "Gemini Live Mode is an alternate AI reviewer. "
+                "Local Fallback Mode is only a backup if APIs are unavailable."
             ),
         )
 
@@ -582,10 +687,6 @@ Provider recommends arthroscopic partial medial meniscectomy due to failed conse
         st.session_state["latest_patient_data"] = patient_data
 
         st.success("Analysis complete.")
-
-    # -------------------------------------------------------------------------
-    # Step 3: Display result and PDF download
-    # -------------------------------------------------------------------------
 
     if st.session_state.get("latest_result"):
         st.markdown("### Step 3 — Results")
@@ -690,46 +791,349 @@ elif page == "Patient Lookup":
 
 
 # =============================================================================
+# Test Evaluation page
+# =============================================================================
+
+elif page == "Test Evaluation":
+    st.markdown("## Test Evaluation")
+
+    st.markdown(
+        "Use this page to evaluate model performance against synthetic test records. "
+        "Upload each test PDF, enter the expected risk category, choose an analysis mode, "
+        "and save the model prediction. The app will automatically build a 3×3 confusion matrix, "
+        "precision/recall scores, and business impact estimates."
+    )
+
+    st.warning(
+        "Use synthetic or de-identified academic test records only. Do not upload real patient data."
+    )
+
+    st.markdown("### Step 1 — Upload Test Record and Expected Label")
+
+    uploaded_eval_file = st.file_uploader(
+        "Upload synthetic test PDF",
+        type=["pdf"],
+        key="evaluation_pdf_upload",
+    )
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        expected_risk = st.selectbox(
+            "Expected Risk Category",
+            ["low", "medium", "high"],
+            index=0,
+        )
+
+    with col_b:
+        eval_analysis_mode = st.selectbox(
+            "Model / Analysis Mode",
+            ["Groq AI Review Mode", "Gemini Live Mode", "Local Fallback Mode"],
+            index=0,
+        )
+
+    with col_c:
+        test_record_name = st.text_input(
+            "Test Record Name / ID",
+            value="",
+            placeholder="Example: Record 01",
+        )
+
+    run_eval = st.button("Run Evaluation on This Record")
+
+    if run_eval:
+        if uploaded_eval_file is None:
+            st.warning("Please upload a synthetic PDF test record first.")
+        else:
+            with st.spinner("Extracting fields and running model evaluation..."):
+                extracted = extract_fields_from_pdf(uploaded_eval_file)
+
+                patient_data = {
+                    "patient_name": extracted.get("patient_name", ""),
+                    "insurance_id": extracted.get("insurance_id", ""),
+                    "provider_npi": extracted.get("provider_npi", ""),
+                    "drug_name": extracted.get("drug_name", ""),
+                    "diagnosis_code": extracted.get("diagnosis_code", ""),
+                    "clinical_summary": extracted.get("clinical_summary", ""),
+                    "raw_text": extracted.get("raw_text", ""),
+                }
+
+                result = analyze_prior_auth(
+                    patient_data,
+                    analysis_mode=eval_analysis_mode,
+                )
+
+            predicted_risk = normalize_risk_label(result.get("risk_level", "unknown"))
+            expected_risk_clean = normalize_risk_label(expected_risk)
+
+            evaluation_record = {
+                "timestamp": datetime.now().isoformat(),
+                "record_name": test_record_name or uploaded_eval_file.name,
+                "file_name": uploaded_eval_file.name,
+                "analysis_mode": eval_analysis_mode,
+                "backend_mode": result.get("analysis_mode", ""),
+                "expected_risk": expected_risk_clean,
+                "predicted_risk": predicted_risk,
+                "risk_score": result.get("risk_score", 0),
+                "match": expected_risk_clean == predicted_risk,
+                "denial_reasons": result.get("denial_reasons", []),
+                "missing_documentation": result.get("missing_documentation", []),
+                "recommended_fixes": result.get("recommended_fixes", []),
+                "retrieved_sources": result.get("retrieved_sources", []),
+            }
+
+            add_evaluation_record(evaluation_record)
+
+            st.success("Evaluation record saved.")
+
+            st.markdown("### Model Output for This Record")
+            render_result(result)
+
+    st.markdown("---")
+    st.markdown("## Evaluation Results")
+
+    evaluation_records = load_evaluation_records()
+
+    if not evaluation_records:
+        st.info("No evaluation records saved yet. Upload a test PDF above to begin.")
+    else:
+        eval_table = []
+
+        for record in evaluation_records:
+            eval_table.append(
+                {
+                    "Record": record.get("record_name", ""),
+                    "File": record.get("file_name", ""),
+                    "Mode": record.get("analysis_mode", ""),
+                    "Backend": record.get("backend_mode", ""),
+                    "Expected": record.get("expected_risk", ""),
+                    "Predicted": record.get("predicted_risk", ""),
+                    "Risk Score": record.get("risk_score", ""),
+                    "Match": "Yes" if record.get("match") else "No",
+                }
+            )
+
+        eval_df = pd.DataFrame(eval_table)
+
+        st.markdown("### Saved Evaluation Records")
+        st.dataframe(eval_df, use_container_width=True)
+
+        confusion_matrix = build_confusion_matrix(evaluation_records)
+
+        st.markdown("### 3×3 Confusion Matrix")
+        st.dataframe(confusion_matrix, use_container_width=True)
+
+        st.caption(
+            "Rows represent the expected risk category. Columns represent the model-generated risk category."
+        )
+
+        metrics_df, weighted_precision, weighted_recall = calculate_precision_recall(
+            confusion_matrix
+        )
+
+        st.markdown("### Precision and Recall")
+        st.dataframe(metrics_df, use_container_width=True)
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.metric("Weighted Precision", weighted_precision)
+
+        with col2:
+            st.metric("Weighted Recall", weighted_recall)
+
+        st.markdown("### Business Impact Assumptions")
+
+        st.markdown(
+            "These fields translate model performance into estimated business impact. "
+            "The estimates are directional and depend on the assumptions entered below."
+        )
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            weekly_prior_auths = st.number_input(
+                "Prior authorizations completed per week",
+                min_value=1,
+                value=100,
+                step=10,
+            )
+
+            current_minutes_per_pa = st.number_input(
+                "Current staff time per prior authorization review (minutes)",
+                min_value=1,
+                value=25,
+                step=1,
+            )
+
+            current_denial_rate_pct = st.number_input(
+                "Current denial rate (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=18.0,
+                step=0.5,
+            )
+
+        with col2:
+            current_adverse_event_rate_pct = st.number_input(
+                "Current adverse patient event / delay rate due to PA review (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=3.0,
+                step=0.1,
+            )
+
+            max_time_reduction_pct = st.number_input(
+                "Assumed maximum time reduction when model is reliable (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=30.0,
+                step=1.0,
+            )
+
+            preventable_denial_pct = st.number_input(
+                "Share of denials assumed preventable through better documentation (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=40.0,
+                step=1.0,
+            )
+
+            preventable_adverse_event_pct = st.number_input(
+                "Share of adverse events / delays assumed preventable through better review (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=20.0,
+                step=1.0,
+            )
+
+        business_metrics = calculate_business_metrics(
+            weekly_prior_auths=weekly_prior_auths,
+            current_minutes_per_pa=current_minutes_per_pa,
+            current_denial_rate=current_denial_rate_pct / 100,
+            current_adverse_event_rate=current_adverse_event_rate_pct / 100,
+            weighted_precision=weighted_precision,
+            weighted_recall=weighted_recall,
+            max_time_reduction_pct=max_time_reduction_pct,
+            preventable_denial_pct=preventable_denial_pct,
+            preventable_adverse_event_pct=preventable_adverse_event_pct,
+        )
+
+        st.markdown("### Estimated Business Metrics")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            st.metric(
+                "Estimated Time Saved per PA",
+                f"{business_metrics['time_saved_per_pa']} min",
+            )
+
+        with col2:
+            st.metric(
+                "Estimated Weekly Time Saved",
+                f"{business_metrics['weekly_time_saved_hours']} hrs",
+            )
+
+        with col3:
+            st.metric(
+                "Projected Denial Rate",
+                f"{business_metrics['projected_denial_rate'] * 100:.1f}%",
+                delta=f"-{business_metrics['denial_rate_reduction'] * 100:.1f}%",
+            )
+
+        col4, col5 = st.columns(2)
+
+        with col4:
+            st.metric(
+                "Projected Adverse Event / Delay Rate",
+                f"{business_metrics['projected_adverse_event_rate'] * 100:.2f}%",
+                delta=f"-{business_metrics['adverse_event_reduction'] * 100:.2f}%",
+            )
+
+        with col5:
+            total_records = len(evaluation_records)
+            correct_records = sum(1 for r in evaluation_records if r.get("match"))
+            accuracy = correct_records / total_records if total_records > 0 else 0
+
+            st.metric(
+                "Risk Label Accuracy",
+                f"{accuracy * 100:.1f}%",
+            )
+
+        st.info(
+            "Business estimates are directional. Weighted precision is used to estimate review-time efficiency, "
+            "while weighted recall is used to estimate potential denial and patient-delay reduction because recall "
+            "measures how well the model catches true risk cases."
+        )
+
+        st.markdown("### Export Evaluation Data")
+
+        csv_data = eval_df.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            label="Download Evaluation Records CSV",
+            data=csv_data,
+            file_name="model_evaluation_records.csv",
+            mime="text/csv",
+        )
+
+        st.markdown("---")
+
+        if st.button("Clear All Evaluation Records"):
+            clear_evaluation_records()
+            st.success("Evaluation records cleared.")
+            st.rerun()
+
+
+# =============================================================================
 # Model Performance page
 # =============================================================================
 
 elif page == "Model Performance":
     st.markdown("## Model Performance")
 
-    st.markdown(
-        "This page summarizes the evaluation of the prior authorization risk analysis system "
-        "using 40 synthetic prior authorization records with varying levels of documentation completeness."
-    )
-
-    st.markdown("### Evaluation Summary")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("Synthetic Records", "40")
-
-    with col2:
-        st.metric("Evaluation Type", "Synthetic Benchmark")
-
-    with col3:
-        st.metric("Output Type", "Risk Score + Risk Level")
-
-    with col4:
-        st.metric("Fallback Behavior", "Implemented")
-
-    st.markdown("### What Was Evaluated")
+    evaluation_records = load_evaluation_records()
 
     st.markdown(
-        """
-        The evaluation tested whether the system could distinguish between:
-
-        - **Complete packets** with strong medical-necessity support
-        - **Medium-risk packets** with partial, ambiguous, or incomplete documentation
-        - **High-risk packets** with major missing documentation, outdated evidence, coding issues, or administrative inconsistencies
-        """
+        "This page summarizes the current model evaluation results from the Test Evaluation page."
     )
 
-    st.markdown("### Evaluation Criteria")
+    if evaluation_records:
+        confusion_matrix = build_confusion_matrix(evaluation_records)
+        metrics_df, weighted_precision, weighted_recall = calculate_precision_recall(confusion_matrix)
+
+        total_records = len(evaluation_records)
+        correct_records = sum(1 for r in evaluation_records if r.get("match"))
+        accuracy = correct_records / total_records if total_records > 0 else 0
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Evaluation Records", total_records)
+
+        with col2:
+            st.metric("Risk Label Accuracy", f"{accuracy * 100:.1f}%")
+
+        with col3:
+            st.metric("Weighted Precision", weighted_precision)
+
+        with col4:
+            st.metric("Weighted Recall", weighted_recall)
+
+        st.markdown("### Current Confusion Matrix")
+        st.dataframe(confusion_matrix, use_container_width=True)
+
+        st.markdown("### Class-Level Precision and Recall")
+        st.dataframe(metrics_df, use_container_width=True)
+
+    else:
+        st.info(
+            "No evaluation records have been saved yet. Go to the Test Evaluation page, upload synthetic records, "
+            "enter expected risk labels, and run the model to generate performance metrics."
+        )
+
+    st.markdown("### What the Evaluation Measures")
 
     evaluation_criteria = [
         {
@@ -764,9 +1168,9 @@ elif page == "Model Performance":
     st.markdown("### Business Interpretation")
 
     st.info(
-        "The synthetic benchmark is designed to test whether the system can support prior authorization staff "
-        "by identifying documentation risk before payer submission. In a real workflow, this could reduce manual "
-        "review time, improve first-pass submission quality, and lower avoidable denial risk."
+        "The evaluation workflow tests whether the system can support prior authorization staff by identifying "
+        "documentation risk before payer submission. In a real workflow, this could reduce manual review time, "
+        "improve first-pass submission quality, and lower avoidable denial risk."
     )
 
     st.markdown("### Current Evaluation Limitations")
@@ -775,21 +1179,6 @@ elif page == "Model Performance":
         "The current benchmark uses synthetic academic records rather than real payer outcomes. "
         "Before production use, the system should be validated on a larger de-identified dataset with actual "
         "authorization outcomes, denial reasons, reviewer feedback, and payer-specific decisions."
-    )
-
-    st.markdown("### Next Evaluation Improvements")
-
-    st.markdown(
-        """
-        Future evaluation should include:
-
-        - Precision and recall for missing-documentation detection
-        - False-positive review of incorrectly flagged gaps
-        - Human reviewer scoring of recommendation quality
-        - Hallucination checks against the uploaded packet and retrieved policy excerpts
-        - Comparison of Local Mode, Gemini Live Mode, and future Claude Live Mode
-        - Business KPI tracking such as review time saved, denial-prevention rate, and first-pass approval improvement
-        """
     )
 
 
@@ -820,7 +1209,7 @@ elif page == "How It Works":
            The system searches the policy knowledge base and retrieves relevant policy/documentation excerpts.
 
         4. **Analyze documentation risk**  
-           The analysis engine checks the packet for missing, incomplete, outdated, or inconsistent documentation.
+           The AI review engine checks the packet for missing, incomplete, outdated, or inconsistent documentation.
 
         5. **Generate business-facing output**  
            The app displays a risk score, risk level, denial reasons, missing documentation, recommended fixes, and retrieved policy sources.
@@ -834,11 +1223,14 @@ elif page == "How It Works":
 
     st.markdown(
         """
-        **Local Mode**  
-        Uses policy retrieval and rule-based critical-gap checks.
+        **Groq AI Review Mode**  
+        Default AI review mode using uploaded packet text and retrieved policy context.
 
         **Gemini Live Mode**  
-        Uses Gemini with retrieved payer-policy context for deeper AI-based review when an API key and quota are available.
+        Backup AI review mode using uploaded packet text and retrieved policy context.
+
+        **Local Fallback Mode**  
+        Backup mode used only when live AI APIs are unavailable.
         """
     )
 
