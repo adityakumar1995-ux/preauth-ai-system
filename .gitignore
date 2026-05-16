@@ -1,0 +1,28 @@
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Generated runtime files
+evaluation_results.csv
+data/preauth_records.json
+
+# Do not push local Chroma vector database
+vector_store/
+
+# Optional local test/demo folders
+evaluation_records/
+sample_cases/
+
+# Logs
+*.log

@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+pymupdf
+chromadb
+sentence-transformers
+google-genai
+python-dotenv
+reportlab
+scikit-learn
+torch
+transformers
