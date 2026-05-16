@@ -218,6 +218,21 @@ def render_result(result):
     level = result.get("risk_level", "unknown")
     css_class = risk_class(level)
 
+    analysis_mode = result.get("analysis_mode", "")
+
+    if analysis_mode == "fallback_local_rules":
+        if result.get("gemini_error"):
+            st.warning(
+                "Gemini Live Mode was unavailable, so the app used Local Mode fallback. "
+                "This may happen because of API quota, missing key, or connection issues."
+            )
+
+        if result.get("claude_error"):
+            st.warning(
+                "Claude Live Mode was unavailable, so the app used Local Mode fallback. "
+                "This may happen because of API credits, missing key, or connection issues."
+            )
+
     st.markdown(
         f"""
         <div class="card">
@@ -324,11 +339,17 @@ def clear_current_submission():
 # =============================================================================
 
 st.sidebar.title("PreAuth.ai")
-st.sidebar.caption("Dify-free Prior Authorization Copilot")
+st.sidebar.caption("Prior Authorization Copilot")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["Dashboard", "New Submission", "Patient Lookup", "How It Works"],
+    [
+        "Dashboard",
+        "New Submission",
+        "Patient Lookup",
+        "Model Performance",
+        "How It Works",
+    ],
 )
 
 st.sidebar.markdown("---")
@@ -419,6 +440,11 @@ elif page == "New Submission":
         unsafe_allow_html=True,
     )
 
+    st.warning(
+        "Academic prototype: use only synthetic or de-identified demo records. "
+        "Do not upload real patient information."
+    )
+
     # -------------------------------------------------------------------------
     # Step 1: Upload PDF
     # -------------------------------------------------------------------------
@@ -428,7 +454,7 @@ elif page == "New Submission":
     uploaded_file = st.file_uploader(
         "Upload Prior Authorization Packet",
         type=["pdf"],
-        help="Upload a PDF packet. The system will extract fields locally using PyMuPDF and regex rules.",
+        help="Upload a PDF packet. The system will extract fields from the document.",
     )
 
     col_upload_1, col_upload_2 = st.columns([1, 3])
@@ -438,7 +464,7 @@ elif page == "New Submission":
 
     with col_upload_2:
         st.markdown(
-            '<div class="small-note">Extraction is local and free. You can edit all extracted fields before analysis.</div>',
+            '<div class="small-note">Upload a prior authorization packet, extract the fields, review them, and then run the analysis.</div>',
             unsafe_allow_html=True,
         )
 
@@ -521,10 +547,14 @@ Provider recommends arthroscopic partial medial meniscectomy due to failed conse
             ),
         )
 
-        demo_mode = st.checkbox(
-            "Use Local Mode",
-            value=True,
-            help="Checked = Local Mode. Unchecked = Gemini Live Mode."
+        analysis_mode = st.selectbox(
+            "Choose Analysis Mode",
+            ["Local Mode", "Gemini Live Mode"],
+            index=0,
+            help=(
+                "Local Mode uses local rule-based analysis. "
+                "Gemini Live Mode uses Gemini with retrieved policy context."
+            ),
         )
 
         submitted = st.form_submit_button("Run Prior Authorization Analysis")
@@ -541,7 +571,10 @@ Provider recommends arthroscopic partial medial meniscectomy due to failed conse
         }
 
         with st.spinner("Retrieving payer policies and analyzing denial risk..."):
-            result = analyze_prior_auth(patient_data, demo_mode=demo_mode)
+            result = analyze_prior_auth(
+                patient_data,
+                analysis_mode=analysis_mode,
+            )
 
         add_submission(patient_data, result)
 
@@ -657,50 +690,178 @@ elif page == "Patient Lookup":
 
 
 # =============================================================================
+# Model Performance page
+# =============================================================================
+
+elif page == "Model Performance":
+    st.markdown("## Model Performance")
+
+    st.markdown(
+        "This page summarizes the evaluation of the prior authorization risk analysis system "
+        "using 40 synthetic prior authorization records with varying levels of documentation completeness."
+    )
+
+    st.markdown("### Evaluation Summary")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Synthetic Records", "40")
+
+    with col2:
+        st.metric("Evaluation Type", "Synthetic Benchmark")
+
+    with col3:
+        st.metric("Output Type", "Risk Score + Risk Level")
+
+    with col4:
+        st.metric("Fallback Behavior", "Implemented")
+
+    st.markdown("### What Was Evaluated")
+
+    st.markdown(
+        """
+        The evaluation tested whether the system could distinguish between:
+
+        - **Complete packets** with strong medical-necessity support
+        - **Medium-risk packets** with partial, ambiguous, or incomplete documentation
+        - **High-risk packets** with major missing documentation, outdated evidence, coding issues, or administrative inconsistencies
+        """
+    )
+
+    st.markdown("### Evaluation Criteria")
+
+    evaluation_criteria = [
+        {
+            "Evaluation Area": "Risk Classification",
+            "What It Measures": "Whether the system assigns low, medium, or high denial risk appropriately.",
+            "Business Relevance": "Helps prior authorization teams prioritize packets that need review before submission.",
+        },
+        {
+            "Evaluation Area": "Missing Documentation Detection",
+            "What It Measures": "Whether the system identifies missing or incomplete clinical/administrative evidence.",
+            "Business Relevance": "Reduces preventable denials caused by incomplete documentation.",
+        },
+        {
+            "Evaluation Area": "Recommended Fix Quality",
+            "What It Measures": "Whether the recommendations are specific, actionable, and relevant to the packet.",
+            "Business Relevance": "Helps staff correct issues faster before payer submission.",
+        },
+        {
+            "Evaluation Area": "Policy Retrieval Relevance",
+            "What It Measures": "Whether retrieved payer-policy excerpts are related to the requested service and documentation need.",
+            "Business Relevance": "Improves trust and explainability for reviewers.",
+        },
+        {
+            "Evaluation Area": "Fallback Reliability",
+            "What It Measures": "Whether the app still returns an analysis when the live LLM API is unavailable.",
+            "Business Relevance": "Keeps the workflow usable during API quota, outage, or connectivity issues.",
+        },
+    ]
+
+    st.dataframe(evaluation_criteria, use_container_width=True)
+
+    st.markdown("### Business Interpretation")
+
+    st.info(
+        "The synthetic benchmark is designed to test whether the system can support prior authorization staff "
+        "by identifying documentation risk before payer submission. In a real workflow, this could reduce manual "
+        "review time, improve first-pass submission quality, and lower avoidable denial risk."
+    )
+
+    st.markdown("### Current Evaluation Limitations")
+
+    st.warning(
+        "The current benchmark uses synthetic academic records rather than real payer outcomes. "
+        "Before production use, the system should be validated on a larger de-identified dataset with actual "
+        "authorization outcomes, denial reasons, reviewer feedback, and payer-specific decisions."
+    )
+
+    st.markdown("### Next Evaluation Improvements")
+
+    st.markdown(
+        """
+        Future evaluation should include:
+
+        - Precision and recall for missing-documentation detection
+        - False-positive review of incorrectly flagged gaps
+        - Human reviewer scoring of recommendation quality
+        - Hallucination checks against the uploaded packet and retrieved policy excerpts
+        - Comparison of Local Mode, Gemini Live Mode, and future Claude Live Mode
+        - Business KPI tracking such as review time saved, denial-prevention rate, and first-pass approval improvement
+        """
+    )
+
+
+# =============================================================================
 # How It Works page
 # =============================================================================
 
 elif page == "How It Works":
-    st.markdown('<div class="title">How It Works</div>', unsafe_allow_html=True)
+    st.markdown("## How It Works")
+
+    st.markdown(
+        "PreAuth.ai helps prior authorization teams review documentation packets before submission. "
+        "The system checks whether the packet appears complete, retrieves relevant payer-policy context, "
+        "and highlights denial-risk factors that may need attention."
+    )
+
+    st.markdown("### Workflow")
 
     st.markdown(
         """
-        This version removes the Dify dependency and replaces it with a local RAG pipeline.
+        1. **Upload prior authorization packet**  
+           The user uploads a synthetic or de-identified prior authorization PDF packet.
 
-        ### System flow
+        2. **Extract key fields**  
+           The app extracts patient, insurance, provider, diagnosis, procedure, and clinical summary details.
 
-        1. The user uploads a prior authorization PDF or enters details manually.
-        2. The PDF extractor reads the packet locally using PyMuPDF.
-        3. The app extracts common fields using regex/rule-based extraction.
-        4. The user reviews and edits the fields.
-        5. The app builds a search query from procedure, diagnosis, and clinical summary.
-        6. The RAG engine searches the local ChromaDB vector store.
-        7. The system retrieves both:
-           - procedure-specific policy chunks
-           - documentation requirement chunks
-        8. The analysis engine checks for common denial-risk gaps.
-        9. The app returns:
-           - risk score
-           - denial reasons
-           - missing documentation
-           - recommended fixes
-           - retrieved sources
-        10. The user can download a PDF report.
+        3. **Retrieve payer-policy context**  
+           The system searches the policy knowledge base and retrieves relevant policy/documentation excerpts.
 
-        ### Current mode
+        4. **Analyze documentation risk**  
+           The analysis engine checks the packet for missing, incomplete, outdated, or inconsistent documentation.
 
-        This app currently uses a rule-based demo analysis engine, so it costs $0 to run.
+        5. **Generate business-facing output**  
+           The app displays a risk score, risk level, denial reasons, missing documentation, recommended fixes, and retrieved policy sources.
 
-        ### Removed dependencies
-
-        - No Dify
-        - No Docker
-        - No hosted workflow engine
-        - No Claude/Gemini/OpenAI calls in demo mode
-
-        ### Next upgrade
-
-        Later we can add Gemini API live mode so the app can generate more flexible,
-        natural-language reasoning using retrieved policy context.
+        6. **Export report**  
+           The user can download a PDF summary report for review or presentation.
         """
+    )
+
+    st.markdown("### Analysis Modes")
+
+    st.markdown(
+        """
+        **Local Mode**  
+        Uses policy retrieval and rule-based critical-gap checks.
+
+        **Gemini Live Mode**  
+        Uses Gemini with retrieved payer-policy context for deeper AI-based review when an API key and quota are available.
+        """
+    )
+
+    st.markdown("### Guardrails")
+
+    st.markdown(
+        """
+        - The system is designed for prior authorization documentation review support, not autonomous decision-making.
+        - The model is instructed to use only the uploaded packet content and retrieved policy excerpts.
+        - Retrieved policy sources are displayed to improve transparency.
+        - If the live AI mode is unavailable, the app can fall back to local analysis.
+        - Users should review outputs before making any operational or submission decision.
+        """
+    )
+
+    st.markdown("### Important Notes")
+
+    st.warning(
+        "This application is an academic prototype and should be used only with synthetic or de-identified demo records. "
+        "It is not intended for real patient-care decisions, payer submissions, or medical/legal advice."
+    )
+
+    st.info(
+        "The system is designed as decision support for prior authorization documentation review. "
+        "Final review should always remain with qualified healthcare, administrative, or compliance staff."
     )
