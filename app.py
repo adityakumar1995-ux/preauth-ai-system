@@ -451,6 +451,7 @@ st.sidebar.caption("Prior Authorization Copilot")
 page = st.sidebar.radio(
     "Navigation",
     [
+        "Product Overview",
         "Dashboard",
         "New Submission",
         "Patient Lookup",
@@ -480,10 +481,174 @@ st.sidebar.write(
 
 
 # =============================================================================
+# Product Overview page
+# =============================================================================
+
+if page == "Product Overview":
+    st.markdown('<div class="title">PreAuth.ai</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="subtitle">AI-powered prior authorization documentation review copilot.</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        PreAuth.ai is an academic prototype designed to help prior authorization teams review documentation
+        packets before payer submission. The system analyzes uploaded prior authorization packets, retrieves
+        relevant payer-policy context, and highlights documentation risks that may lead to avoidable denials.
+        """
+    )
+
+    st.markdown("### The Business Problem")
+
+    st.markdown(
+        """
+        Prior authorization teams often spend significant time manually checking whether a submission packet
+        includes the required clinical, administrative, and payer-specific documentation. Missing or incomplete
+        documentation can lead to delays, rework, denials, and negative patient experience.
+
+        PreAuth.ai focuses on identifying these issues earlier in the workflow, before the packet is submitted.
+        """
+    )
+
+    st.markdown("### Who It Is For")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown(
+            """
+            **Prior Authorization Staff**  
+            Review packets before submission and identify missing documentation.
+            """
+        )
+
+    with col2:
+        st.markdown(
+            """
+            **Revenue Cycle Teams**  
+            Reduce avoidable denials, rework, and administrative delays.
+            """
+        )
+
+    with col3:
+        st.markdown(
+            """
+            **Clinical Operations Teams**  
+            Improve documentation completeness and payer-readiness.
+            """
+        )
+
+    st.markdown("### How the AI Workflow Works")
+
+    st.markdown(
+        """
+        1. **Upload a synthetic prior authorization packet**  
+           The app extracts key fields and the full packet text from the PDF.
+
+        2. **Retrieve payer-policy context**  
+           The system searches the local knowledge base for relevant policy and documentation guidance.
+
+        3. **Run AI documentation review**  
+           Groq AI Review Mode reviews the packet and policy context to identify denial-risk factors.
+
+        4. **Generate reviewer-facing output**  
+           The app returns a risk score, risk level, denial reasons, missing documentation, recommended fixes, and retrieved policy sources.
+
+        5. **Evaluate model performance**  
+           The Test Evaluation page allows users to compare expected versus predicted risk levels and generate precision, recall, confusion matrix, and business impact estimates.
+        """
+    )
+
+    st.markdown("### Key Product Features")
+
+    feature_data = [
+        {
+            "Feature": "PDF Packet Upload",
+            "Value": "Allows prior authorization packets to be reviewed in one workflow.",
+        },
+        {
+            "Feature": "AI Risk Review",
+            "Value": "Classifies documentation risk as low, medium, or high.",
+        },
+        {
+            "Feature": "Missing Documentation Detection",
+            "Value": "Highlights incomplete, missing, outdated, or inconsistent documentation.",
+        },
+        {
+            "Feature": "Recommended Fixes",
+            "Value": "Provides actionable next steps before payer submission.",
+        },
+        {
+            "Feature": "Policy Source Transparency",
+            "Value": "Shows retrieved policy sources used during review.",
+        },
+        {
+            "Feature": "Model Evaluation",
+            "Value": "Generates confusion matrix, precision, recall, and business impact estimates.",
+        },
+        {
+            "Feature": "PDF Report Export",
+            "Value": "Creates a downloadable summary report for review or presentation.",
+        },
+    ]
+
+    st.dataframe(feature_data, use_container_width=True)
+
+    st.markdown("### Business Value")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Workflow Goal", "Reduce Review Time")
+
+    with col2:
+        st.metric("Risk Goal", "Lower Avoidable Denials")
+
+    with col3:
+        st.metric("Quality Goal", "Improve Submission Readiness")
+
+    st.markdown(
+        """
+        The business impact is estimated using model performance metrics from the Test Evaluation page.
+        Weighted precision is used to estimate review-time efficiency, while weighted recall is used to estimate
+        potential denial and patient-delay reduction.
+        """
+    )
+
+    st.markdown("### Responsible AI Positioning")
+
+    st.warning(
+        "This application is an academic prototype and should be used only with synthetic or de-identified demo records. "
+        "It is not intended for real patient-care decisions, payer submissions, or medical/legal advice."
+    )
+
+    st.info(
+        "PreAuth.ai is designed as decision support. Final review should remain with qualified healthcare, "
+        "administrative, revenue-cycle, or compliance staff."
+    )
+
+    st.markdown("### Suggested Demo Flow")
+
+    st.markdown(
+        """
+        For a live demo or final project presentation:
+
+        1. Go to **New Submission**
+        2. Upload a synthetic prior authorization packet
+        3. Run **Groq AI Review Mode**
+        4. Review the risk score, missing documentation, recommended fixes, and policy sources
+        5. Go to **Test Evaluation** to show confusion matrix, precision, recall, and business metrics
+        6. Go to **Model Performance** to summarize evaluation results
+        """
+    )
+
+
+# =============================================================================
 # Dashboard page
 # =============================================================================
 
-if page == "Dashboard":
+elif page == "Dashboard":
     st.markdown('<div class="title">Dashboard</div>', unsafe_allow_html=True)
     st.markdown(
         '<div class="subtitle">Overview of prior authorization submissions.</div>',
